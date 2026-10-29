@@ -26,7 +26,7 @@ app.use(
     origin(origin, callback) {
       if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
       if (/^http:\/\/localhost:\d+$/.test(origin)) return callback(null, true);
-      // Previews da Vercel do projeto (mourawear-*.vercel.app)
+      // Domínios e previews da Vercel do projeto (moura-wear*.vercel.app, mourawear*.vercel.app)
       if (/^https:\/\/mourawear[a-z0-9-]*\.vercel\.app$/.test(origin)) return callback(null, true);
       console.warn(`CORS bloqueado para origem: ${origin}`);
       callback(new Error("Not allowed by CORS"));
