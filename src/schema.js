@@ -41,6 +41,15 @@ async function createTable(name, build) {
   return false;
 }
 
+async function addColumns(table, columns) {
+  for (const [name, build] of Object.entries(columns)) {
+    if (!(await db.schema.hasColumn(table, name))) {
+      await db.schema.alterTable(table, build);
+      console.log(`✅ Coluna '${table}.${name}' criada`);
+    }
+  }
+}
+
 const sha256 = (value) => crypto.createHash("sha256").update(value).digest("hex");
 
 export async function getSetting(key) {
@@ -156,6 +165,13 @@ export async function initDatabase() {
     t.text("notes");
     t.string("created_at");
     t.string("updated_at");
+  });
+
+  // Colunas adicionadas depois do primeiro deploy (bancos existentes ganham via ALTER).
+  await addColumns("orders", {
+    expires_at: (t) => t.string("expires_at"), // reserva de estoque dos pedidos via WhatsApp
+    cancel_reason: (t) => t.string("cancel_reason"), // "expired" quando cancelado automaticamente
+    notice_seen: (t) => t.boolean("notice_seen").defaultTo(true), // aviso de cancelamento já visto pelo cliente
   });
 
   // Imagens enviadas pelo admin ficam no banco: o disco do Render é efêmero.

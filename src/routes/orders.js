@@ -9,6 +9,9 @@ export const ORDER_STATUSES = ["pending", "paid", "shipped", "delivered", "cance
 const PAYMENT_METHODS = ["pix", "whatsapp", "mercadopago"];
 
 const MP_TOKEN = process.env.MP_ACCESS_TOKEN;
+
+// Pedidos via WhatsApp seguram o estoque por este tempo esperando o admin confirmar o pagamento.
+export const WHATSAPP_HOLD_HOURS = Number(process.env.WHATSAPP_HOLD_HOURS) || 7;
 const MP_API = "https://api.mercadopago.com";
 
 export const formatOrder = (o) => ({
@@ -26,6 +29,8 @@ export const formatOrder = (o) => ({
   status: o.status,
   paymentUrl: o.payment_url || null,
   notes: o.notes || "",
+  expiresAt: o.status === "pending" ? o.expires_at || null : null,
+  cancelReason: o.cancel_reason || null,
   createdAt: o.created_at,
   updatedAt: o.updated_at,
 });
@@ -47,6 +52,29 @@ async function adjustStock(trx, items, direction) {
     if (!entry) continue;
     entry.stock = Math.max(0, (Number(entry.stock) || 0) + direction * item.quantity);
     await trx("products").where({ id: product.id }).update({ sizes: JSON.stringify(sizes) });
+  }
+}
+
+// Cancela pedidos via WhatsApp não pagos dentro do prazo e devolve as peças ao estoque.
+// Roda num intervalo e também antes das requisições: no plano grátis o Render dorme e o
+// intervalo para, então quem acordar o servidor já vê o estoque e os pedidos corretos.
+let lastExpireRun = 0;
+export async function expireOverdueOrders({ force = false } = {}) {
+  if (!force && Date.now() - lastExpireRun < 30_000) return;
+  lastExpireRun = Date.now();
+  const overdue = await db("orders")
+    .where({ status: "pending", payment_method: "whatsapp" })
+    .whereNotNull("expires_at")
+    .where("expires_at", "<", now());
+  for (const row of overdue) {
+    await db.transaction(async (trx) => {
+      // O where no status evita devolver o estoque duas vezes se o admin agir ao mesmo tempo.
+      const updated = await trx("orders")
+        .where({ id: row.id, status: "pending" })
+        .update({ status: "canceled", cancel_reason: "expired", notice_seen: false, updated_at: now() });
+      if (updated) await adjustStock(trx, parseJson(row.items, []), +1);
+    });
+    console.log(`⏰ Pedido ${row.id} cancelado: pagamento não confirmado em ${WHATSAPP_HOLD_HOURS}h`);
   }
 }
 
@@ -173,6 +201,8 @@ router.post("/orders", requireAuth, async (req, res) => {
         address: JSON.stringify(address),
         payment_method: paymentMethod,
         status: "pending",
+        expires_at:
+          paymentMethod === "whatsapp" ? new Date(Date.now() + WHATSAPP_HOLD_HOURS * 3600_000).toISOString() : null,
         notes: String(notes).slice(0, 1000),
         created_at: now(),
         updated_at: now(),
@@ -194,6 +224,19 @@ router.post("/orders", requireAuth, async (req, res) => {
   } catch (error) {
     res.status(400).json({ error: error.message || "Não foi possível finalizar o pedido." });
   }
+});
+
+// Pedidos cancelados automaticamente que o cliente ainda não viu (aviso no site).
+router.get("/orders/notices", requireAuth, async (req, res) => {
+  const rows = await db("orders")
+    .where({ user_id: req.user.id, status: "canceled", cancel_reason: "expired", notice_seen: false })
+    .orderBy("updated_at", "desc");
+  res.json(rows.map(formatOrder));
+});
+
+router.post("/orders/:id/notice-seen", requireAuth, async (req, res) => {
+  await db("orders").where({ id: req.params.id, user_id: req.user.id }).update({ notice_seen: true });
+  res.json({ ok: true });
 });
 
 router.get("/orders/mine", requireAuth, async (req, res) => {
@@ -221,7 +264,7 @@ router.post("/orders/:id/cancel", requireAuth, async (req, res) => {
   }
   await db.transaction(async (trx) => {
     await adjustStock(trx, parseJson(row.items, []), +1);
-    await trx("orders").where({ id: row.id }).update({ status: "canceled", updated_at: now() });
+    await trx("orders").where({ id: row.id }).update({ status: "canceled", cancel_reason: "customer", updated_at: now() });
   });
   res.json(formatOrder(await db("orders").where({ id: row.id }).first()));
 });
@@ -247,7 +290,16 @@ router.put("/admin/orders/:id/status", requireAdmin, async (req, res) => {
     } else if (row.status === "canceled" && status !== "canceled") {
       await adjustStock(trx, parseJson(row.items, []), -1);
     }
-    await trx("orders").where({ id: row.id }).update({ status, updated_at: now() });
+    // Qualquer ação do admin encerra a reserva automática e o motivo de cancelamento anterior.
+    await trx("orders")
+      .where({ id: row.id })
+      .update({
+        status,
+        expires_at: null,
+        cancel_reason: status === "canceled" ? "admin" : null,
+        notice_seen: true,
+        updated_at: now(),
+      });
   });
   res.json(formatOrder(await db("orders").where({ id: row.id }).first()));
 });
