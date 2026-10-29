@@ -57,7 +57,7 @@ async function createMercadoPagoPreference(order) {
     items: [
       {
         id: order.id,
-        title: `Pedido ${order.id} - MouraWear`,
+        title: `Pedido ${order.id} - MoreiraWear`,
         quantity: 1,
         currency_id: "BRL",
         unit_price: Number(order.total),

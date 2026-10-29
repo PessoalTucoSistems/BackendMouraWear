@@ -2,7 +2,8 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { db, now } from "./db.js";
 
-export const ADMIN_EMAIL = "mourawear@admin.com";
+export const ADMIN_EMAIL = "moreirawear@admin.com";
+const LEGACY_ADMIN_EMAIL = "mourawear@admin.com";
 const DEFAULT_ADMIN_PASSWORD = "12345678";
 
 export const DEFAULT_SETTINGS = {
@@ -59,12 +60,20 @@ async function setSetting(key, value) {
 async function ensureAdmin() {
   const envPassword = process.env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASSWORD;
   const envHash = sha256(envPassword);
+
+  // A marca mudou de MouraWear para MoreiraWear: renomeia o admin antigo mantendo a senha.
+  const legacy = await db("users").where({ email: LEGACY_ADMIN_EMAIL }).first();
+  if (legacy && !(await db("users").where({ email: ADMIN_EMAIL }).first())) {
+    await db("users").where({ id: legacy.id }).update({ email: ADMIN_EMAIL, name: "Admin MoreiraWear" });
+    console.log(`👤 Admin renomeado: ${LEGACY_ADMIN_EMAIL} → ${ADMIN_EMAIL}`);
+  }
+
   const admin = await db("users").where({ email: ADMIN_EMAIL }).first();
 
   if (!admin) {
     await db("users").insert({
       id: crypto.randomUUID(),
-      name: "Admin MouraWear",
+      name: "Admin MoreiraWear",
       email: ADMIN_EMAIL,
       password_hash: await bcrypt.hash(envPassword, 10),
       role: "admin",

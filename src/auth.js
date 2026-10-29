@@ -1,7 +1,7 @@
 import jwt from "jsonwebtoken";
 import { db } from "./db.js";
 
-export const JWT_SECRET = process.env.JWT_SECRET || "mourawear-dev-secret-troque-em-producao";
+export const JWT_SECRET = process.env.JWT_SECRET || "moreirawear-dev-secret-troque-em-producao";
 
 if (!process.env.JWT_SECRET) {
   console.warn("⚠️  JWT_SECRET não configurado - usando chave de desenvolvimento.");

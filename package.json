@@ -1,8 +1,8 @@
 {
-  "name": "mourawear-backend",
+  "name": "moreirawear-backend",
   "version": "1.0.0",
   "type": "module",
-  "description": "API da loja MouraWear (streetwear)",
+  "description": "API da loja MoreiraWear (streetwear)",
   "main": "server.js",
   "engines": {
     "node": ">=18.0.0"

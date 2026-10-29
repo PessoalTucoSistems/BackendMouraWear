@@ -1,6 +1,6 @@
-# MouraWear — Backend
+# MoreiraWear — Backend
 
-API da loja streetwear MouraWear (Express + Knex). PostgreSQL em produção (Render), SQLite local.
+API da loja streetwear MoreiraWear (Express + Knex). PostgreSQL em produção (Render), SQLite local.
 
 ## Rodar local
 ```bash
@@ -14,9 +14,9 @@ Use o Blueprint (`render.yaml`): cria o web service + PostgreSQL gratuito. Depoi
 
 | Variável | Valor |
 |---|---|
-| `FRONTEND_URL` | URL da Vercel (ex.: `https://mourawear.vercel.app`) |
+| `FRONTEND_URL` | URL da Vercel (ex.: `https://moura-wear.vercel.app`) |
 | `PUBLIC_API_URL` | URL deste serviço (ex.: `https://backendmourawear.onrender.com`) |
-| `ADMIN_PASSWORD` | senha do admin `mourawear@admin.com` (padrão `12345678`) |
+| `ADMIN_PASSWORD` | senha do admin `moreirawear@admin.com` (padrão `12345678`) |
 | `MP_ACCESS_TOKEN` | opcional — habilita pagamento online pelo Mercado Pago |
 
 O admin é criado na primeira subida. A senha pode ser trocada na aba **Usuários** do painel;

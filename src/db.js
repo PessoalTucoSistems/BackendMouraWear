@@ -24,7 +24,7 @@ export const db = knex(
       }
     : {
         client: "sqlite3",
-        connection: { filename: "./data/mourawear.sqlite" },
+        connection: { filename: "./data/moreirawear.sqlite" },
         useNullAsDefault: true,
       },
 );

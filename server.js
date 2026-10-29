@@ -26,8 +26,8 @@ app.use(
     origin(origin, callback) {
       if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
       if (/^http:\/\/localhost:\d+$/.test(origin)) return callback(null, true);
-      // Domínios e previews da Vercel do projeto (moura-wear*.vercel.app, mourawear*.vercel.app)
-      if (/^https:\/\/moura-?wear[a-z0-9-]*\.vercel\.app$/.test(origin)) return callback(null, true);
+      // Domínios e previews da Vercel do projeto (moura-wear*, mourawear*, moreira-wear*, moreirawear* .vercel.app)
+      if (/^https:\/\/(moura|moreira)-?wear[a-z0-9-]*\.vercel\.app$/.test(origin)) return callback(null, true);
       console.warn(`CORS bloqueado para origem: ${origin}`);
       callback(new Error("Not allowed by CORS"));
     },
@@ -37,7 +37,7 @@ app.use(
 // Limite maior para upload de fotos (base64) pelo admin.
 app.use(express.json({ limit: "10mb" }));
 
-app.get("/", (req, res) => res.send("MouraWear API online 🖤"));
+app.get("/", (req, res) => res.send("MoreiraWear API online 🖤"));
 app.get("/health", (req, res) => res.json({ status: "ok", db: dbType }));
 
 app.use("/api/auth", authRoutes);
@@ -52,7 +52,7 @@ app.use((err, req, res, next) => {
 
 initDatabase()
   .then(() => {
-    app.listen(PORT, () => console.log(`🚀 MouraWear API na porta ${PORT} (${dbType})`));
+    app.listen(PORT, () => console.log(`🚀 MoreiraWear API na porta ${PORT} (${dbType})`));
   })
   .catch(async (error) => {
     console.error("❌ Falha ao iniciar o banco:", error);
