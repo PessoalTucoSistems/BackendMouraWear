@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db, dbType, now, parseJson } from "../db.js";
 import { requireAdmin, requireAuth } from "../auth.js";
 import { getSetting } from "../schema.js";
-import { checkCharge, createCharge, sumupEnabled } from "../sumup.js";
+import { cancelCharge, checkCharge, createCharge, sumupEnabled } from "../sumup.js";
 
 const router = Router();
 
@@ -13,6 +13,15 @@ const MP_TOKEN = process.env.MP_ACCESS_TOKEN;
 
 // Pedidos via WhatsApp seguram o estoque por este tempo esperando o admin confirmar o pagamento.
 export const WHATSAPP_HOLD_HOURS = Number(process.env.WHATSAPP_HOLD_HOURS) || 7;
+// Pedidos online (SumUp / Mercado Pago) esperam o pagamento por este tempo.
+export const ONLINE_HOLD_MINUTES = Number(process.env.ONLINE_HOLD_MINUTES) || 30;
+const ONLINE_METHODS = ["sumup", "mercadopago"];
+
+const expiresAtFor = (paymentMethod, from = Date.now()) => {
+  if (paymentMethod === "whatsapp") return new Date(from + WHATSAPP_HOLD_HOURS * 3600_000).toISOString();
+  if (ONLINE_METHODS.includes(paymentMethod)) return new Date(from + ONLINE_HOLD_MINUTES * 60_000).toISOString();
+  return null;
+};
 const MP_API = "https://api.mercadopago.com";
 
 export const formatOrder = (o) => ({
@@ -57,26 +66,53 @@ async function adjustStock(trx, items, direction) {
   }
 }
 
-// Cancela pedidos via WhatsApp não pagos dentro do prazo e devolve as peças ao estoque.
-// Roda num intervalo e também antes das requisições: no plano grátis o Render dorme e o
-// intervalo para, então quem acordar o servidor já vê o estoque e os pedidos corretos.
+// Cancela pedidos não pagos dentro do prazo (WhatsApp: 7h; online: 30 min) e devolve as
+// peças ao estoque. Roda num intervalo e também antes das requisições: no plano grátis o
+// Render dorme e o intervalo para, então quem acordar o servidor já vê tudo correto.
 let lastExpireRun = 0;
+let expiring = false;
 export async function expireOverdueOrders({ force = false } = {}) {
-  if (!force && Date.now() - lastExpireRun < 30_000) return;
+  if (expiring || (!force && Date.now() - lastExpireRun < 30_000)) return;
   lastExpireRun = Date.now();
-  const overdue = await db("orders")
-    .where({ status: "pending", payment_method: "whatsapp" })
-    .whereNotNull("expires_at")
-    .where("expires_at", "<", now());
-  for (const row of overdue) {
-    await db.transaction(async (trx) => {
-      // O where no status evita devolver o estoque duas vezes se o admin agir ao mesmo tempo.
-      const updated = await trx("orders")
-        .where({ id: row.id, status: "pending" })
-        .update({ status: "canceled", cancel_reason: "expired", notice_seen: false, updated_at: now() });
-      if (updated) await adjustStock(trx, parseJson(row.items, []), +1);
-    });
-    console.log(`⏰ Pedido ${row.id} cancelado: pagamento não confirmado em ${WHATSAPP_HOLD_HOURS}h`);
+  expiring = true;
+  try {
+    const overdue = await db("orders").where({ status: "pending" }).whereNotNull("expires_at").where("expires_at", "<", now());
+    for (const row of overdue) await expireOrder(row);
+  } finally {
+    expiring = false;
+  }
+}
+
+async function expireOrder(row) {
+  // Online: antes de cancelar, confere no banco se o cliente pagou no último minuto.
+  if (ONLINE_METHODS.includes(row.payment_method)) {
+    try {
+      if (row.payment_method === "sumup") await syncSumupPayment(row);
+      else await syncMercadoPagoPayment(row.id);
+    } catch (error) {
+      console.warn(`[Pagamentos] Pedido ${row.id}: consulta falhou, cancelamento fica para a próxima rodada:`, error.message);
+      return;
+    }
+  }
+  await db.transaction(async (trx) => {
+    // O where no status evita devolver o estoque duas vezes se o admin agir ao mesmo tempo.
+    const updated = await trx("orders")
+      .where({ id: row.id, status: "pending" })
+      .update({ status: "canceled", cancel_reason: "expired", notice_seen: false, updated_at: now() });
+    if (updated) {
+      await adjustStock(trx, parseJson(row.items, []), +1);
+      console.log(`⏰ Pedido ${row.id} (${row.payment_method}) cancelado: pagamento não confirmado no prazo`);
+    }
+  });
+  // Desativa a cobrança da SumUp para ninguém pagar um pedido já cancelado.
+  if (row.payment_method === "sumup" && row.payment_id) await cancelCharge(row.payment_id).catch(() => {});
+}
+
+// Pedidos online pendentes criados antes do prazo existir ganham o prazo a partir da criação.
+export async function backfillOnlineExpiry() {
+  const rows = await db("orders").where({ status: "pending" }).whereIn("payment_method", ONLINE_METHODS).whereNull("expires_at");
+  for (const row of rows) {
+    await db("orders").where({ id: row.id }).update({ expires_at: expiresAtFor(row.payment_method, new Date(row.created_at).getTime()) });
   }
 }
 
@@ -130,6 +166,8 @@ async function createMercadoPagoPreference(order) {
       failure: `${frontend}/pedidos/${order.id}`,
     },
     auto_return: "approved",
+    // O link de pagamento expira junto com a reserva do pedido.
+    ...(order.expires_at ? { expires: true, expiration_date_to: order.expires_at } : {}),
     ...(apiBase ? { notification_url: `${apiBase}/api/webhooks/mercadopago` } : {}),
   };
 
@@ -156,7 +194,7 @@ async function syncMercadoPagoPayment(orderId) {
   if (approved) {
     await db("orders")
       .where({ id: orderId, status: "pending" })
-      .update({ status: "paid", payment_id: String(approved.id), updated_at: now() });
+      .update({ status: "paid", payment_id: String(approved.id), expires_at: null, updated_at: now() });
   }
 }
 
@@ -232,8 +270,7 @@ router.post("/orders", requireAuth, async (req, res) => {
         address: JSON.stringify(address),
         payment_method: paymentMethod,
         status: "pending",
-        expires_at:
-          paymentMethod === "whatsapp" ? new Date(Date.now() + WHATSAPP_HOLD_HOURS * 3600_000).toISOString() : null,
+        expires_at: expiresAtFor(paymentMethod),
         notes: String(notes).slice(0, 1000),
         created_at: now(),
         updated_at: now(),

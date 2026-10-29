@@ -22,6 +22,7 @@ Use o Blueprint (`render.yaml`): cria o web service + PostgreSQL gratuito. Depoi
 | `SUMUP_MERCHANT_CODE` | opcional — código da loja na SumUp (sem ele, é lido da própria API key) |
 | `PAGAMENTO_ONLINE` | opcional — `sumup` ou `mercadopago`, quando os dois estão configurados (padrão `sumup`) |
 | `WHATSAPP_HOLD_HOURS` | opcional — horas de reserva dos pedidos via WhatsApp (padrão `7`) |
+| `ONLINE_HOLD_MINUTES` | opcional — minutos que um pedido online espera o pagamento antes de cancelar (padrão `30`) |
 
 O admin é criado na primeira subida. A senha pode ser trocada na aba **Usuários** do painel;
 ela só é sobrescrita se o valor de `ADMIN_PASSWORD` no Render for alterado.

@@ -51,6 +51,8 @@ async function createCheckout(order, extras = {}) {
     currency: "BRL",
     merchant_code: await merchant(),
     description: `Pedido ${order.id} - MoreiraWear`,
+    // A cobrança vale só até o fim da reserva do pedido.
+    ...(order.expires_at ? { valid_until: order.expires_at } : {}),
     ...extras,
   });
   if (!checkout?.id) throw httpError(502, "A SumUp não criou o checkout.");
@@ -138,4 +140,11 @@ export async function checkCharge(reference) {
   if (status === "FAILED") return { status: "failed" };
   if (status === "EXPIRED") return { status: "expired" };
   return { status: "pending" };
+}
+
+/** Desativa um checkout em aberto (pedido cancelado). */
+export async function cancelCharge(reference) {
+  const [type, ...rest] = String(reference || "").split(":");
+  if (type !== "checkout" || !rest.length) return;
+  await call("DELETE", `/v0.1/checkouts/${rest.join(":")}`);
 }
