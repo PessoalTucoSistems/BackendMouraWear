@@ -2,11 +2,12 @@ import { Router } from "express";
 import { db, dbType, now, parseJson } from "../db.js";
 import { requireAdmin, requireAuth } from "../auth.js";
 import { getSetting } from "../schema.js";
+import { checkCharge, createCharge, sumupEnabled } from "../sumup.js";
 
 const router = Router();
 
 export const ORDER_STATUSES = ["pending", "paid", "shipped", "delivered", "canceled"];
-const PAYMENT_METHODS = ["pix", "whatsapp", "mercadopago"];
+const PAYMENT_METHODS = ["pix", "whatsapp", "mercadopago", "sumup"];
 
 const MP_TOKEN = process.env.MP_ACCESS_TOKEN;
 
@@ -28,6 +29,7 @@ export const formatOrder = (o) => ({
   paymentMethod: o.payment_method,
   status: o.status,
   paymentUrl: o.payment_url || null,
+  pixCode: o.status === "pending" ? o.payment_qr || null : null,
   notes: o.notes || "",
   expiresAt: o.status === "pending" ? o.expires_at || null : null,
   cancelReason: o.cancel_reason || null,
@@ -75,6 +77,35 @@ export async function expireOverdueOrders({ force = false } = {}) {
       if (updated) await adjustStock(trx, parseJson(row.items, []), +1);
     });
     console.log(`⏰ Pedido ${row.id} cancelado: pagamento não confirmado em ${WHATSAPP_HOLD_HOURS}h`);
+  }
+}
+
+// Marca como pago se a cobrança da SumUp foi paga com o valor do pedido.
+async function syncSumupPayment(row) {
+  if (!sumupEnabled() || !String(row.payment_id || "").startsWith("checkout:")) return;
+  const result = await checkCharge(row.payment_id);
+  if (result.status !== "paid") return;
+  if (result.amount + 0.01 < Number(row.total)) {
+    console.warn(`⚠️ Pedido ${row.id}: SumUp pago com ${result.amount}, total ${row.total}. Confirme manualmente.`);
+    return;
+  }
+  const updated = await db("orders")
+    .where({ id: row.id, status: "pending" })
+    .update({ status: "paid", payment_qr: null, expires_at: null, updated_at: now() });
+  if (updated) console.log(`💸 Pedido ${row.id} pago via SumUp`);
+}
+
+// Conciliação: cobranças SumUp em aberto das últimas 48h (cobre quem fechou a tela).
+export async function reconcileSumup() {
+  if (!sumupEnabled()) return;
+  const since = new Date(Date.now() - 48 * 3600_000).toISOString();
+  const rows = await db("orders")
+    .where({ status: "pending", payment_method: "sumup" })
+    .whereNotNull("payment_id")
+    .where("updated_at", ">=", since)
+    .limit(50);
+  for (const row of rows) {
+    await syncSumupPayment(row).catch((e) => console.warn(`[SumUp] Conciliação do pedido ${row.id}:`, e.message));
   }
 }
 
@@ -140,7 +171,7 @@ router.post("/orders", requireAuth, async (req, res) => {
   if (!PAYMENT_METHODS.includes(paymentMethod)) {
     return res.status(400).json({ error: "Escolha uma forma de pagamento." });
   }
-  if (paymentMethod === "mercadopago" && !MP_TOKEN) {
+  if ((paymentMethod === "mercadopago" && !MP_TOKEN) || (paymentMethod === "sumup" && !sumupEnabled())) {
     return res.status(400).json({ error: "Pagamento online indisponível no momento." });
   }
   for (const field of ["cep", "street", "number", "city", "state"]) {
@@ -253,7 +284,36 @@ router.get("/orders/:id", requireAuth, async (req, res) => {
     await syncMercadoPagoPayment(row.id).catch(() => {});
     row = await db("orders").where({ id: req.params.id }).first();
   }
+  if (row.status === "pending" && row.payment_method === "sumup") {
+    await syncSumupPayment(row).catch((e) => console.warn(`[SumUp] Consulta do pedido ${row.id}:`, e.message));
+    row = await db("orders").where({ id: req.params.id }).first();
+  }
   res.json(formatOrder(row));
+});
+
+// Gera a cobrança SumUp do pedido: { method: "pix" | "card" }. Pode ser chamada de novo
+// (PIX expirado, troca de PIX para cartão etc.); cada chamada cria um checkout novo.
+router.post("/orders/:id/sumup", requireAuth, async (req, res) => {
+  const row = await db("orders").where({ id: req.params.id, user_id: req.user.id }).first();
+  if (!row) return res.status(404).json({ error: "Pedido não encontrado." });
+  if (row.payment_method !== "sumup") return res.status(400).json({ error: "Este pedido não é de pagamento online." });
+  if (row.status !== "pending") return res.status(400).json({ error: "Este pedido não está aguardando pagamento." });
+  const method = req.body?.method === "card" ? "card" : "pix";
+
+  // Antes de gerar outra cobrança, confere se a anterior já foi paga.
+  await syncSumupPayment(row).catch(() => {});
+  const fresh = await db("orders").where({ id: row.id }).first();
+  if (fresh.status !== "pending") return res.json(formatOrder(fresh));
+
+  try {
+    const charge = await createCharge(fresh, method);
+    await db("orders")
+      .where({ id: row.id })
+      .update({ payment_id: charge.reference, payment_qr: charge.pixCode || null, payment_url: charge.url || null, updated_at: now() });
+    res.json(formatOrder(await db("orders").where({ id: row.id }).first()));
+  } catch (error) {
+    res.status(error.status || 502).json({ error: error.message });
+  }
 });
 
 router.post("/orders/:id/cancel", requireAuth, async (req, res) => {

@@ -5,7 +5,7 @@ import { db, dbType } from "./src/db.js";
 import { initDatabase } from "./src/schema.js";
 import authRoutes from "./src/routes/auth.js";
 import catalogRoutes from "./src/routes/catalog.js";
-import orderRoutes, { expireOverdueOrders } from "./src/routes/orders.js";
+import orderRoutes, { expireOverdueOrders, reconcileSumup } from "./src/routes/orders.js";
 import adminRoutes from "./src/routes/admin.js";
 
 const app = express();
@@ -60,6 +60,7 @@ app.use((err, req, res, next) => {
 initDatabase()
   .then(() => {
     setInterval(() => expireOverdueOrders({ force: true }).catch((e) => console.error("❌ Expirar pedidos:", e.message)), 5 * 60_000);
+    setInterval(() => reconcileSumup().catch((e) => console.error("❌ Conciliação SumUp:", e.message)), 60_000);
     app.listen(PORT, () => console.log(`🚀 MoreiraWear API na porta ${PORT} (${dbType})`));
   })
   .catch(async (error) => {

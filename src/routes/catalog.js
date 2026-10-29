@@ -1,8 +1,18 @@
 import { Router } from "express";
+import { sumupEnabled } from "../sumup.js";
 import crypto from "crypto";
 import { db, now, parseJson, toBool } from "../db.js";
 import { requireAdmin } from "../auth.js";
 import { DEFAULT_SETTINGS, getSetting } from "../schema.js";
+
+// Quem atende o botão "Pagar online": PAGAMENTO_ONLINE escolhe quando os dois estão
+// configurados; sem escolha, SumUp tem prioridade sobre o Mercado Pago.
+export function onlinePaymentProvider() {
+  const ready = { sumup: sumupEnabled(), mercadopago: !!process.env.MP_ACCESS_TOKEN };
+  const chosen = String(process.env.PAGAMENTO_ONLINE || "").toLowerCase();
+  if (ready[chosen]) return chosen;
+  return ready.sumup ? "sumup" : ready.mercadopago ? "mercadopago" : null;
+}
 
 const router = Router();
 
@@ -76,6 +86,7 @@ router.get("/settings", async (req, res) => {
     shippingFee: Number(settings.shippingFee) || 0,
     freeShippingMin: Number(settings.freeShippingMin) || 0,
     mercadoPagoEnabled: !!process.env.MP_ACCESS_TOKEN,
+    onlinePayment: onlinePaymentProvider(),
   });
 });
 

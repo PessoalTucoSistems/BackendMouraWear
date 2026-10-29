@@ -18,6 +18,10 @@ Use o Blueprint (`render.yaml`): cria o web service + PostgreSQL gratuito. Depoi
 | `PUBLIC_API_URL` | URL deste serviço (ex.: `https://backendmourawear.onrender.com`) |
 | `ADMIN_PASSWORD` | senha do admin `moreirawear@admin.com` (padrão `12345678`) |
 | `MP_ACCESS_TOKEN` | opcional — habilita pagamento online pelo Mercado Pago |
+| `SUMUP_API_KEY` | opcional — habilita pagamento online pela SumUp (PIX com QR Code e cartão); chave `sup_sk_...` |
+| `SUMUP_MERCHANT_CODE` | opcional — código da loja na SumUp (sem ele, é lido da própria API key) |
+| `PAGAMENTO_ONLINE` | opcional — `sumup` ou `mercadopago`, quando os dois estão configurados (padrão `sumup`) |
+| `WHATSAPP_HOLD_HOURS` | opcional — horas de reserva dos pedidos via WhatsApp (padrão `7`) |
 
 O admin é criado na primeira subida. A senha pode ser trocada na aba **Usuários** do painel;
 ela só é sobrescrita se o valor de `ADMIN_PASSWORD` no Render for alterado.

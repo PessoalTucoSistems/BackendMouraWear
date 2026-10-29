@@ -172,6 +172,7 @@ export async function initDatabase() {
     expires_at: (t) => t.string("expires_at"), // reserva de estoque dos pedidos via WhatsApp
     cancel_reason: (t) => t.string("cancel_reason"), // "expired" quando cancelado automaticamente
     notice_seen: (t) => t.boolean("notice_seen").defaultTo(true), // aviso de cancelamento já visto pelo cliente
+    payment_qr: (t) => t.text("payment_qr"), // PIX copia e cola da SumUp
   });
 
   // Imagens enviadas pelo admin ficam no banco: o disco do Render é efêmero.
