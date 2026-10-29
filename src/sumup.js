@@ -102,19 +102,56 @@ async function generatePix(checkoutId, type, order) {
   return pixCode;
 }
 
+const PIX_TYPES = ["pix", "qr_code_pix"];
+const pixTypes = () => {
+  const chosen = String(process.env.SUMUP_PIX_TYPES || "")
+    .split(",")
+    .map((t) => t.trim().toLowerCase())
+    .filter((t) => PIX_TYPES.includes(t));
+  return chosen.length ? chosen : PIX_TYPES;
+};
+
+// Diagnóstico sem dados do cliente: lê no código EMV o domínio do recebedor (PIX dinâmico,
+// campo 26 → 25) ou avisa que é uma chave estática.
+function pixReceiver(code) {
+  const fields = (text) => {
+    const out = {};
+    for (let i = 0; i + 4 <= text.length; ) {
+      const id = text.slice(i, i + 2);
+      const len = Number(text.slice(i + 2, i + 4));
+      if (!Number.isFinite(len)) break;
+      out[id] = text.slice(i + 4, i + 4 + len);
+      i += 4 + len;
+    }
+    return out;
+  };
+  try {
+    const account = fields(fields(code)["26"] || "");
+    if (account["25"]) return `dinâmico (${account["25"].split("/")[0]})`;
+    if (account["01"]) return "estático (chave PIX)";
+  } catch {
+    /* formato inesperado */
+  }
+  return "desconhecido";
+}
+
 /**
  * Cria a cobrança do pedido. method: "pix" | "card".
  * Retorna { reference, pixCode?, url? }; reference = "checkout:<id>".
  */
 export async function createCharge(order, method) {
   if (method === "pix") {
-    // "pix" cai direto na conta; se a conta não aceitar, "qr_code_pix". Cada tentativa usa um checkout novo.
+    // Tipos de PIX na ordem de SUMUP_PIX_TYPES (padrão "pix,qr_code_pix"): "pix" cai direto na
+    // conta SumUp; "qr_code_pix" usa o repasse normal. Cada tentativa usa um checkout novo.
     let lastError = null;
-    for (const type of ["pix", "qr_code_pix"]) {
+    for (const type of pixTypes()) {
       try {
         const checkout = await createCheckout(order);
         const pixCode = await generatePix(checkout.id, type, order);
-        if (pixCode) return { reference: `checkout:${checkout.id}`, pixCode };
+        if (pixCode) {
+          console.log(`[SumUp] PIX gerado para o pedido ${order.id}: tipo "${type}", recebedor ${pixReceiver(pixCode)}`);
+          return { reference: `checkout:${checkout.id}`, pixCode };
+        }
       } catch (error) {
         lastError = error;
         console.warn(`[SumUp] PIX (${type}) não gerado:`, error.message);
