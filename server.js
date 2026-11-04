@@ -4,8 +4,8 @@ import cors from "cors";
 import { db, dbType } from "./src/db.js";
 import { initDatabase } from "./src/schema.js";
 import authRoutes from "./src/routes/auth.js";
-import catalogRoutes from "./src/routes/catalog.js";
-import orderRoutes, { backfillOnlineExpiry, expireOverdueOrders, reconcileSumup } from "./src/routes/orders.js";
+import catalogRoutes, { onlinePaymentProvider } from "./src/routes/catalog.js";
+import orderRoutes, { backfillOnlineExpiry, expireOverdueOrders, reconcileMercadoPago, reconcileSumup } from "./src/routes/orders.js";
 import adminRoutes from "./src/routes/admin.js";
 
 const app = express();
@@ -62,7 +62,8 @@ initDatabase()
   .then(() => {
     setInterval(() => expireOverdueOrders({ force: true }).catch((e) => console.error("❌ Expirar pedidos:", e.message)), 5 * 60_000);
     setInterval(() => reconcileSumup().catch((e) => console.error("❌ Conciliação SumUp:", e.message)), 60_000);
-    app.listen(PORT, () => console.log(`🚀 MoreiraWear API na porta ${PORT} (${dbType})`));
+    setInterval(() => reconcileMercadoPago().catch((e) => console.error("❌ Conciliação Mercado Pago:", e.message)), 60_000);
+    app.listen(PORT, () => console.log(`🚀 MoreiraWear API na porta ${PORT} (${dbType}) — pagamento online: ${onlinePaymentProvider() || "desativado"}`));
   })
   .catch(async (error) => {
     console.error("❌ Falha ao iniciar o banco:", error);

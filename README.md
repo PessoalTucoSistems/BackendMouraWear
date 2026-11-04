@@ -21,7 +21,7 @@ Use o Blueprint (`render.yaml`): cria o web service + PostgreSQL gratuito. Depoi
 | `SUMUP_API_KEY` | opcional — habilita pagamento online pela SumUp (PIX com QR Code e cartão); chave `sup_sk_...` |
 | `SUMUP_MERCHANT_CODE` | opcional — código da loja na SumUp (sem ele, é lido da própria API key) |
 | `SUMUP_PIX_TYPES` | opcional — ordem dos tipos de PIX da SumUp: `pix,qr_code_pix` (padrão) ou só `qr_code_pix` / `pix` |
-| `PAGAMENTO_ONLINE` | opcional — `sumup` ou `mercadopago`, quando os dois estão configurados (padrão `sumup`) |
+| `PAGAMENTO_ONLINE` | opcional — `mercadopago` ou `sumup`, quando os dois estão configurados (padrão `mercadopago`) |
 | `WHATSAPP_HOLD_HOURS` | opcional — horas de reserva dos pedidos via WhatsApp (padrão `7`) |
 | `ONLINE_HOLD_MINUTES` | opcional — minutos que um pedido online espera o pagamento antes de cancelar (padrão `30`) |
 

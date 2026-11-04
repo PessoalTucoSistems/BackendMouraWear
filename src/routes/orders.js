@@ -3,13 +3,12 @@ import { db, dbType, now, parseJson } from "../db.js";
 import { requireAdmin, requireAuth } from "../auth.js";
 import { getSetting } from "../schema.js";
 import { cancelCharge, checkCharge, createCharge, sumupEnabled } from "../sumup.js";
+import { mpToken } from "../mercadopago.js";
 
 const router = Router();
 
 export const ORDER_STATUSES = ["pending", "paid", "shipped", "delivered", "canceled"];
 const PAYMENT_METHODS = ["pix", "whatsapp", "mercadopago", "sumup"];
-
-const MP_TOKEN = process.env.MP_ACCESS_TOKEN;
 
 // Pedidos via WhatsApp seguram o estoque por este tempo esperando o admin confirmar o pagamento.
 export const WHATSAPP_HOLD_HOURS = Number(process.env.WHATSAPP_HOLD_HOURS) || 7;
@@ -88,7 +87,7 @@ async function expireOrder(row) {
   if (ONLINE_METHODS.includes(row.payment_method)) {
     try {
       if (row.payment_method === "sumup") await syncSumupPayment(row);
-      else await syncMercadoPagoPayment(row.id);
+      else await syncMercadoPagoPayment(row);
     } catch (error) {
       console.warn(`[Pagamentos] Pedido ${row.id}: consulta falhou, cancelamento fica para a próxima rodada:`, error.message);
       return;
@@ -147,7 +146,8 @@ export async function reconcileSumup() {
 
 async function createMercadoPagoPreference(order) {
   const frontend = (process.env.FRONTEND_URL || "http://localhost:5173").split(",")[0].trim();
-  const apiBase = process.env.PUBLIC_API_URL;
+  // No Render, RENDER_EXTERNAL_URL já vem preenchida com o endereço público do serviço.
+  const apiBase = String(process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/+$/, "");
   const body = {
     items: [
       {
@@ -173,28 +173,62 @@ async function createMercadoPagoPreference(order) {
 
   const response = await fetch(`${MP_API}/checkout/preferences`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${MP_TOKEN}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${mpToken()}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.message || "Falha ao criar pagamento no Mercado Pago");
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const reason = response.status === 401 ? "o Mercado Pago recusou o access token" : data.message || response.status;
+    throw new Error(`Falha ao criar pagamento no Mercado Pago: ${reason}`);
+  }
+  if (!data.init_point) throw new Error("O Mercado Pago não devolveu o link de pagamento.");
   return data.init_point;
 }
 
+// Gera (ou regera) o link do Checkout Pro e grava no pedido. Retorna o link ou null.
+async function ensureMercadoPagoLink(order) {
+  try {
+    const url = await createMercadoPagoPreference(order);
+    await db("orders").where({ id: order.id }).update({ payment_url: url, updated_at: now() });
+    return url;
+  } catch (error) {
+    console.error(`❌ Mercado Pago (pedido ${order.id}):`, error.message);
+    return null;
+  }
+}
+
+// Marca o pedido como pago se o pagamento aprovado cobre o total.
+async function markMercadoPagoPaid(order, payment) {
+  const amount = Number(payment.transaction_amount);
+  if (Number.isFinite(amount) && amount + 0.01 < Number(order.total)) {
+    console.warn(`⚠️ Pedido ${order.id}: Mercado Pago pago com ${amount}, total ${order.total}. Confirme manualmente.`);
+    return;
+  }
+  const updated = await db("orders")
+    .where({ id: order.id, status: "pending" })
+    .update({ status: "paid", payment_id: String(payment.id), expires_at: null, updated_at: now() });
+  if (updated) console.log(`💸 Pedido ${order.id} pago via Mercado Pago`);
+}
+
 // Marca como pago se o Mercado Pago tiver algum pagamento aprovado do pedido.
-async function syncMercadoPagoPayment(orderId) {
-  if (!MP_TOKEN) return;
+async function syncMercadoPagoPayment(order) {
+  if (!mpToken()) return;
   const response = await fetch(
-    `${MP_API}/v1/payments/search?external_reference=${encodeURIComponent(orderId)}&sort=date_created&criteria=desc`,
-    { headers: { Authorization: `Bearer ${MP_TOKEN}` } },
+    `${MP_API}/v1/payments/search?external_reference=${encodeURIComponent(order.id)}&sort=date_created&criteria=desc`,
+    { headers: { Authorization: `Bearer ${mpToken()}` } },
   );
-  if (!response.ok) return;
+  if (!response.ok) throw new Error(`Mercado Pago respondeu ${response.status}`);
   const data = await response.json();
   const approved = (data.results || []).find((p) => p.status === "approved");
-  if (approved) {
-    await db("orders")
-      .where({ id: orderId, status: "pending" })
-      .update({ status: "paid", payment_id: String(approved.id), expires_at: null, updated_at: now() });
+  if (approved) await markMercadoPagoPaid(order, approved);
+}
+
+// Conciliação: pedidos Mercado Pago em aberto (cobre webhook perdido com o Render dormindo).
+export async function reconcileMercadoPago() {
+  if (!mpToken()) return;
+  const rows = await db("orders").where({ status: "pending", payment_method: "mercadopago" }).limit(50);
+  for (const row of rows) {
+    await syncMercadoPagoPayment(row).catch((e) => console.warn(`[Mercado Pago] Conciliação do pedido ${row.id}:`, e.message));
   }
 }
 
@@ -209,7 +243,7 @@ router.post("/orders", requireAuth, async (req, res) => {
   if (!PAYMENT_METHODS.includes(paymentMethod)) {
     return res.status(400).json({ error: "Escolha uma forma de pagamento." });
   }
-  if ((paymentMethod === "mercadopago" && !MP_TOKEN) || (paymentMethod === "sumup" && !sumupEnabled())) {
+  if ((paymentMethod === "mercadopago" && !mpToken()) || (paymentMethod === "sumup" && !sumupEnabled())) {
     return res.status(400).json({ error: "Pagamento online indisponível no momento." });
   }
   for (const field of ["cep", "street", "number", "city", "state"]) {
@@ -280,12 +314,8 @@ router.post("/orders", requireAuth, async (req, res) => {
     });
 
     if (paymentMethod === "mercadopago") {
-      try {
-        order.payment_url = await createMercadoPagoPreference(order);
-        await db("orders").where({ id: order.id }).update({ payment_url: order.payment_url });
-      } catch (error) {
-        console.error("❌ Mercado Pago:", error.message);
-      }
+      // Se falhar aqui, a tela do pedido tenta gerar o link de novo.
+      order.payment_url = await ensureMercadoPagoLink(order);
     }
 
     res.status(201).json(formatOrder(order));
@@ -318,8 +348,12 @@ router.get("/orders/:id", requireAuth, async (req, res) => {
     return res.status(404).json({ error: "Pedido não encontrado." });
   }
   if (row.status === "pending" && row.payment_method === "mercadopago") {
-    await syncMercadoPagoPayment(row.id).catch(() => {});
+    await syncMercadoPagoPayment(row).catch((e) => console.warn(`[Mercado Pago] Consulta do pedido ${row.id}:`, e.message));
     row = await db("orders").where({ id: req.params.id }).first();
+    if (row.status === "pending" && !row.payment_url && row.user_id === req.user.id && mpToken()) {
+      await ensureMercadoPagoLink(row);
+      row = await db("orders").where({ id: req.params.id }).first();
+    }
   }
   if (row.status === "pending" && row.payment_method === "sumup") {
     await syncSumupPayment(row).catch((e) => console.warn(`[SumUp] Consulta do pedido ${row.id}:`, e.message));
@@ -408,18 +442,17 @@ router.post("/webhooks/mercadopago", async (req, res) => {
   try {
     const paymentId = req.body?.data?.id || req.query.id || req.query["data.id"];
     const type = req.body?.type || req.query.topic || req.query.type;
-    if (!MP_TOKEN || !paymentId || (type && type !== "payment")) return;
+    if (!mpToken() || !paymentId || (type && type !== "payment")) return;
 
+    // Nunca confia no corpo do webhook: o pagamento é relido na API com o nosso token.
     const response = await fetch(`${MP_API}/v1/payments/${paymentId}`, {
-      headers: { Authorization: `Bearer ${MP_TOKEN}` },
+      headers: { Authorization: `Bearer ${mpToken()}` },
     });
     if (!response.ok) return;
     const payment = await response.json();
     if (payment.status === "approved" && payment.external_reference) {
-      await db("orders")
-        .where({ id: payment.external_reference, status: "pending" })
-        .update({ status: "paid", payment_id: String(payment.id), updated_at: now() });
-      console.log(`💸 Pedido ${payment.external_reference} pago via Mercado Pago`);
+      const order = await db("orders").where({ id: payment.external_reference, status: "pending" }).first();
+      if (order) await markMercadoPagoPaid(order, payment);
     }
   } catch (error) {
     console.error("❌ Webhook Mercado Pago:", error.message);
