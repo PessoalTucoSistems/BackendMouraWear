@@ -3,6 +3,7 @@ import { db, dbType, now, parseJson } from "../db.js";
 import { requireAdmin, requireAuth } from "../auth.js";
 import { getSetting } from "../schema.js";
 import { cancelCharge, checkCharge, createCharge, sumupEnabled } from "../sumup.js";
+import { deliveryOptions, SHIPPING_LABEL, SHIPPING_METHODS } from "../shipping.js";
 import { cancelPendingPayments, createCardLink, createPix, getPayment, mpToken, paymentsOf } from "../mercadopago.js";
 
 const router = Router();
@@ -31,6 +32,8 @@ export const formatOrder = (o) => ({
   items: parseJson(o.items, []),
   subtotal: Number(o.subtotal),
   shipping: Number(o.shipping),
+  shippingMethod: o.shipping_method || "fixed",
+  shippingDays: o.shipping_days ?? null,
   total: Number(o.total),
   address: parseJson(o.address, {}),
   paymentMethod: o.payment_method,
@@ -183,10 +186,33 @@ export async function reconcileMercadoPago() {
   }
 }
 
+// Soma o subtotal e as peças do carrinho com os preços do banco (para cotar o frete).
+async function cartTotals(items) {
+  let subtotal = 0;
+  let quantity = 0;
+  for (const item of Array.isArray(items) ? items : []) {
+    const qty = Math.max(0, parseInt(item?.quantity, 10) || 0);
+    const product = await db("products").where({ id: item?.productId }).first();
+    if (!product || !qty) continue;
+    subtotal += Number(product.price) * qty;
+    quantity += qty;
+  }
+  return { subtotal: round2(subtotal), quantity };
+}
+
 // ---------- Cliente ----------
+
+// Opções de entrega para o CEP: { options: [{ method, label, price, days, free }], error, pickupAddress }.
+router.post("/shipping/quote", async (req, res) => {
+  const { subtotal, quantity } = await cartTotals(req.body?.items);
+  if (!quantity) return res.status(400).json({ error: "Seu carrinho está vazio." });
+  const result = await deliveryOptions({ cep: req.body?.cep, quantity, subtotal });
+  res.json({ ...result, pickupAddress: (await getSetting("pickupAddress")) || "" });
+});
 
 router.post("/orders", requireAuth, async (req, res) => {
   const { items, address = {}, paymentMethod, notes = "" } = req.body;
+  const shippingMethod = SHIPPING_METHODS.includes(req.body.shippingMethod) ? req.body.shippingMethod : null;
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: "Seu carrinho está vazio." });
@@ -197,15 +223,26 @@ router.post("/orders", requireAuth, async (req, res) => {
   if ((paymentMethod === "mercadopago" && !mpToken()) || (paymentMethod === "sumup" && !sumupEnabled())) {
     return res.status(400).json({ error: "Pagamento online indisponível no momento." });
   }
-  for (const field of ["cep", "street", "number", "city", "state"]) {
-    if (!String(address[field] || "").trim()) {
-      return res.status(400).json({ error: "Preencha o endereço de entrega completo." });
+  if (!shippingMethod) return res.status(400).json({ error: "Escolha como quer receber o pedido." });
+  if (shippingMethod !== "pickup") {
+    for (const field of ["cep", "street", "number", "city", "state"]) {
+      if (!String(address[field] || "").trim()) {
+        return res.status(400).json({ error: "Preencha o endereço de entrega completo." });
+      }
     }
   }
 
-  // Lido fora da transação: no SQLite o pool tem uma conexão só.
-  const freeMin = Number(await getSetting("freeShippingMin")) || 0;
-  const fee = Number(await getSetting("shippingFee")) || 0;
+  // O frete é recotado aqui (fora da transação: no SQLite o pool tem uma conexão só e a
+  // cotação vai à internet); o valor mostrado no navegador nunca é usado.
+  let shippingOption = { method: "pickup", price: 0, days: null };
+  if (shippingMethod !== "pickup") {
+    const totals = await cartTotals(items);
+    const { options, error } = await deliveryOptions({ cep: address.cep, quantity: totals.quantity, subtotal: totals.subtotal });
+    shippingOption = options.find((o) => o.method === shippingMethod);
+    if (!shippingOption) {
+      return res.status(400).json({ error: error || `${SHIPPING_LABEL[shippingMethod]} indisponível para esse CEP. Escolha outra opção.` });
+    }
+  }
 
   try {
     const order = await db.transaction(async (trx) => {
@@ -240,7 +277,7 @@ router.post("/orders", requireAuth, async (req, res) => {
       await adjustStock(trx, orderItems, -1);
 
       const subtotal = round2(orderItems.reduce((sum, i) => sum + i.price * i.quantity, 0));
-      const shipping = freeMin > 0 && subtotal >= freeMin ? 0 : fee;
+      const shipping = shippingOption.price;
 
       const row = {
         id: newOrderId(),
@@ -253,6 +290,8 @@ router.post("/orders", requireAuth, async (req, res) => {
         shipping,
         total: round2(subtotal + shipping),
         address: JSON.stringify(address),
+        shipping_method: shippingOption.method,
+        shipping_days: shippingOption.days,
         payment_method: paymentMethod,
         status: "pending",
         expires_at: expiresAtFor(paymentMethod),

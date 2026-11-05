@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { sumupEnabled } from "../sumup.js";
 import { mpEnabled } from "../mercadopago.js";
+import { correiosEnabled } from "../shipping.js";
 import crypto from "crypto";
 import { db, now, parseJson, toBool } from "../db.js";
 import { requireAdmin } from "../auth.js";
@@ -88,6 +89,7 @@ router.get("/settings", async (req, res) => {
     freeShippingMin: Number(settings.freeShippingMin) || 0,
     mercadoPagoEnabled: mpEnabled(),
     onlinePayment: onlinePaymentProvider(),
+    correiosEnabled: correiosEnabled(),
   });
 });
 

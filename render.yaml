@@ -21,6 +21,10 @@ services:
         sync: false
       - key: SUMUP_API_KEY
         sync: false
+      - key: MELHOR_ENVIO_TOKEN
+        sync: false
+      - key: MELHOR_ENVIO_EMAIL
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: mourawear-db

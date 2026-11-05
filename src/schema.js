@@ -13,6 +13,9 @@ export const DEFAULT_SETTINGS = {
   pixKey: "",
   shippingFee: "19.90",
   freeShippingMin: "299",
+  originCep: "", // CEP de onde os pedidos saem (cotação PAC/SEDEX)
+  itemWeightKg: "0.3", // peso médio de cada peça embalada
+  pickupAddress: "", // onde o cliente retira em mãos (mostrado no checkout e no pedido)
 };
 
 const DEFAULT_CATEGORIES = ["Camisetas", "Moletons", "Calças", "Bermudas", "Bonés", "Acessórios"];
@@ -173,6 +176,8 @@ export async function initDatabase() {
     cancel_reason: (t) => t.string("cancel_reason"), // "expired" quando cancelado automaticamente
     notice_seen: (t) => t.boolean("notice_seen").defaultTo(true), // aviso de cancelamento já visto pelo cliente
     payment_qr: (t) => t.text("payment_qr"), // PIX copia e cola da SumUp
+    shipping_method: (t) => t.string("shipping_method"), // pickup | pac | sedex | fixed
+    shipping_days: (t) => t.integer("shipping_days"), // prazo dos Correios em dias úteis
   });
 
   // Imagens enviadas pelo admin ficam no banco: o disco do Render é efêmero.
